@@ -84,55 +84,6 @@ wss.on("connection", async (ws) => {
     let accumulatedAudioBuffer = Buffer.alloc(0);
     let lastSendTime = Date.now(); // Track the last time audio was sent to the API
 
-    // Function to handle pause detection
-    const startPauseTimer = () => {
-        // Clear any existing timer
-        if (pauseTimer) {
-            clearTimeout(pauseTimer);
-        }
-        // Start a new pause timaer
-        pauseTimer = setTimeout(async () => {
-            if (!isCallActive) {
-                console.log("Call is no longer active, skipping processing");
-                return;
-            }
-
-            if (accumulatedAudio.length === 0) {
-                return;
-            }
-
-            console.log("User has paused for more than 800ms");
-            // You can handle what happens when a pause is detected here
-            // For example, send a message to the client or process the accumulated data
-            // Get the last string from the array
-            const lastString = accumulatedAudio[accumulatedAudio.length - 1];
-
-            // Check if the number of words in the last string is greater than 2
-            const sentenceHasThreeWords = lastString.split(" ").length >= 3;
-
-            if (sentenceHasThreeWords) {
-                let finalTranscript = processTranscription(accumulatedAudio);
-
-                finalTranscript += ". Give me the content in brief.";
-                // console.log(finalTranscript);
-
-                answer = await sendMessage(finalTranscript);
-                // answer = answer.replace(/[^a-zA-Z0-9\s.,]/g, "");
-                // console.log(answer);
-
-                if (isCallActive) {
-                    await updateCall();
-                    accumulatedAudio = [];
-                } else {
-                    console.log(
-                        "Call ended while processing, skipping TwiML update"
-                    );
-                }
-            }
-            accumulatedAudio = [];
-        }, PAUSE_THRESHOLD);
-    };
-
     const client = new AssemblyAI({
         apiKey: process.env.AssemblyAI_API_KEY,
     });
