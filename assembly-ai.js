@@ -12,6 +12,7 @@ dotenv.config();
 
 // Twilio configuration
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const PORT = process.env.PORT;
 
 // Middleware setup
 const app = express();
@@ -365,6 +366,10 @@ app.post("/process-user-input", (req, res) => {
     res.send(twimlResponse);
 });
 
-// Start the server
-console.log("Listening on port 6000");
-server.listen(6000);
+app.post("/", (req, res) => {
+    console.log(`Server is running on PORT ${PORT}`);
+    res.status(200);
+});
+
+console.log(`Listening on port ${PORT}`);
+server.listen(PORT);
