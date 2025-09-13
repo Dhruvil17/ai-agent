@@ -85,7 +85,7 @@ wss.on("connection", async (ws) => {
     let lastSendTime = Date.now(); // Track the last time audio was sent to the API
 
     const client = new AssemblyAI({
-        apiKey: process.env.AssemblyAI_API_KEY,
+        apiKey: process.env.ASSEMBLYAI_API_KEY,
     });
 
     const transcriber = client.realtime.transcriber({
