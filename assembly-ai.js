@@ -134,7 +134,7 @@ wss.on("connection", async (ws) => {
     };
 
     const client = new AssemblyAI({
-        apiKey: process.env.AssemblyAI,
+        apiKey: process.env.AssemblyAI_API_KEY,
     });
 
     const transcriber = client.realtime.transcriber({
