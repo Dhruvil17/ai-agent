@@ -6,6 +6,7 @@ const bodyParser = require("body-parser");
 const axios = require("axios");
 const qs = require("qs");
 const dotenv = require("dotenv");
+const morgan = require("morgan");
 const { AssemblyAI } = require("assemblyai");
 const { sendMessage } = require("./backend_model");
 dotenv.config();
@@ -18,6 +19,7 @@ const PORT = process.env.PORT;
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+app.use(morgan("dev"));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
