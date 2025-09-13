@@ -369,8 +369,8 @@ app.post("/process-user-input", (req, res) => {
 });
 
 app.post("/", (req, res) => {
-    console.log(`Server is running on PORT ${PORT}`);
-    res.status(200);
+    console.log("Body:", req.body);
+    res.status(200).json({ message: "POST request received!", body: req.body });
 });
 
 console.log(`Listening on port ${PORT}`);
