@@ -11,9 +11,9 @@ const { AssemblyAI } = require("assemblyai");
 const { sendMessage } = require("./backend_model");
 dotenv.config();
 
-// Twilio configuration
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const PORT = process.env.PORT;
+const BACKEND_URL = process.env.BACKEND_URL;
 
 // Middleware setup
 const app = express();
@@ -189,7 +189,7 @@ wss.on("connection", async (ws) => {
                 const data = qs.stringify({
                     Twiml: `<Response>
                                 <Say language="en-IN">Hello! I'm your AI sales assistant. How can I help you today?</Say>
-                                <Redirect method="POST">https://15c69a10ce25.ngrok-free.app/process-user-input</Redirect>
+                                <Redirect method="POST">${BACKEND_URL}/process-user-input</Redirect>
                         </Response>`,
                 });
 
@@ -366,7 +366,7 @@ const updateCall = async () => {
         const twimlResponse = `<Response>
                 <Say language="en-IN">${sanitizedAnswer}</Say>
                 <Pause length="2"/>
-                <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600"></Gather>
+                <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600"></Gather>
                 <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
             </Response>`;
 
@@ -433,7 +433,7 @@ const stopCurrentTwiML = async () => {
     const data = qs.stringify({
         Twiml: `
             <Response>
-                <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600">
+                <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600">
                     <Pause length="1"/>
                 </Gather>
             </Response>
@@ -476,7 +476,7 @@ app.post("/process-user-input", (req, res) => {
 
         const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
                                 <Response>
-                                    <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600">
+                                    <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600">
                                         <Pause length="1"/>
                                     </Gather>
                                     <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
@@ -511,4 +511,5 @@ server.listen(PORT, () => {
     console.log(`✅ Server is running on port ${PORT}`);
     console.log(`📞 WebSocket server ready for Twilio connections`);
     console.log(`🎤 AssemblyAI integration ready`);
+    console.log(`🔗 All webhooks will use: ${BACKEND_URL}`);
 });
