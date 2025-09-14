@@ -256,6 +256,10 @@ wss.on("connection", async (ws) => {
                     const shouldSendDueToTime =
                         timeSinceLastSend >= PAUSE_THRESHOLD;
 
+                    if (accumulatedAudioBuffer.length < 100) {
+                        return;
+                    }
+
                     // Interrupt detection
                     if (isCurrentlyPlaying) {
                         const speechDetected = isSpeechDetected(linear16Buffer);
