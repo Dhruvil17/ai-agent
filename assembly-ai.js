@@ -72,8 +72,8 @@ wss.on("connection", async (ws) => {
 
     let accumulatedAudio = [];
     const PAUSE_THRESHOLD = 1000; // Reduced for better responsiveness
-    const OPTIMAL_MIN_DURATION = 50; // 50ms chunks as recommended
-    const OPTIMAL_MAX_DURATION = 200; // Shorter chunks for better latency
+    const OPTIMAL_MIN_DURATION = 100; // Increased to 100ms to meet minimum requirement
+    const OPTIMAL_MAX_DURATION = 400; // 400ms for good balance
 
     let accumulatedAudioBuffer = Buffer.alloc(0);
     let lastSendTime = Date.now();
@@ -193,7 +193,7 @@ wss.on("connection", async (ws) => {
                 // Send welcome message
                 const data = qs.stringify({
                     Twiml: `<Response>
-                                <Say language="en-IN">Hello! I'm your AI sales assistant. How can I help you today?</Say>
+                                <Say language="en-IN">Hello! I'm your AI assistant. How can I help you today?</Say>
                                 <Redirect method="POST">${BACKEND_URL}/process-user-input</Redirect>
                         </Response>`,
                 });
@@ -255,8 +255,10 @@ wss.on("connection", async (ws) => {
                         duration >= OPTIMAL_MIN_DURATION;
                     const shouldSendDueToTime =
                         timeSinceLastSend >= PAUSE_THRESHOLD;
+                    const shouldSendDueToMaxSize =
+                        duration >= OPTIMAL_MAX_DURATION;
 
-                    if (accumulatedAudioBuffer.length < 400) {
+                    if (accumulatedAudioBuffer.length < 800) {
                         return;
                     }
                     // Interrupt detection
@@ -271,9 +273,11 @@ wss.on("connection", async (ws) => {
                         }
                     }
 
-                    // Send audio when conditions are met
+                    // Send audio when conditions are met (force send if too large)
                     if (
-                        (shouldSendDueToSize || shouldSendDueToTime) &&
+                        (shouldSendDueToSize ||
+                            shouldSendDueToTime ||
+                            shouldSendDueToMaxSize) &&
                         accumulatedAudioBuffer.length > 0
                     ) {
                         try {
@@ -359,8 +363,14 @@ const updateCall = async () => {
             return;
         }
 
+        let cleanAnswer = answer
+            .replace(/[*#-]/g, "")
+            .replace(/\n+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
         // Sanitize the answer to prevent TwiML injection
-        const sanitizedAnswer = answer.replace(/[<>&"']/g, (match) => {
+        const sanitizedAnswer = cleanAnswer.replace(/[<>&"']/g, (match) => {
             const escapeMap = {
                 "<": "&lt;",
                 ">": "&gt;",
@@ -500,13 +510,19 @@ app.post("/process-user-input", (req, res) => {
         console.log("Received webhook from Twilio:", req.body);
         res.type("text/xml");
 
-        const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-                                <Response>
-                                    <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600">
-                                        <Pause length="1"/>
-                                    </Gather>
-                                    <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
-                                </Response>`;
+        let twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+                                    <Response>
+                                        <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600">
+                                            <Pause length="1"/>
+                                        </Gather>
+                                        <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
+                                    </Response>`;
+
+        twimlResponse = twimlResponse
+            .replace(/[*#-]/g, "")
+            .replace(/\n+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
 
         console.log("Sending TwiML response:", twimlResponse);
         res.send(twimlResponse);
