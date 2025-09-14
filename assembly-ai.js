@@ -30,14 +30,12 @@ let isCurrentlyPlaying = false;
 
 // Function to calculate RMS and check if it crosses the threshold
 const isSpeechDetected = (linear16Data) => {
-    // Convert Int16Array to normalized float values
     const floatSamples = new Float32Array(linear16Data.length);
     for (let i = 0; i < linear16Data.length; i++) {
-        floatSamples[i] = linear16Data[i] / 32768.0; // Normalize to [-1, 1]
+        floatSamples[i] = linear16Data[i] / 32768.0;
     }
 
-    // Use a sliding window for more accurate RMS calculation
-    const windowSize = 160; // 20ms at 8kHz sample rate
+    const windowSize = 160;
     const numWindows = Math.floor(floatSamples.length / windowSize);
     let windowRMSValues = [];
 
@@ -54,21 +52,17 @@ const isSpeechDetected = (linear16Data) => {
         windowRMSValues.push(windowRMS);
     }
 
-    // Calculate statistics
     const avgRMS =
         windowRMSValues.reduce((sum, rms) => sum + rms, 0) /
         windowRMSValues.length;
     const maxRMS = Math.max(...windowRMSValues);
 
-    // Convert to dB
     const avgDB = 20 * Math.log10(avgRMS);
     const maxDB = 20 * Math.log10(maxRMS);
 
-    // Thresholds
-    const NOISE_FLOOR_DB = -20; // Typical noise floor
-    const SPEECH_THRESHOLD_DB = -20; // Typical speech threshold
+    const NOISE_FLOOR_DB = -20;
+    const SPEECH_THRESHOLD_DB = -20;
 
-    // Decision making
     return maxDB > SPEECH_THRESHOLD_DB && avgDB > NOISE_FLOOR_DB;
 };
 
@@ -76,71 +70,108 @@ const isSpeechDetected = (linear16Data) => {
 wss.on("connection", async (ws) => {
     console.log("ws: client connected");
 
-    let pauseTimer = null;
     let accumulatedAudio = [];
-    const PAUSE_THRESHOLD = 2000;
-
-    // Define optimal duration in milliseconds
-    const OPTIMAL_MIN_DURATION = 100; // Minimum duration in milliseconds
-    const OPTIMAL_MAX_DURATION = 450; // Maximum duration in milliseconds
+    const PAUSE_THRESHOLD = 1000; // Reduced for better responsiveness
+    const OPTIMAL_MIN_DURATION = 50; // 50ms chunks as recommended
+    const OPTIMAL_MAX_DURATION = 200; // Shorter chunks for better latency
 
     let accumulatedAudioBuffer = Buffer.alloc(0);
-    let lastSendTime = Date.now(); // Track the last time audio was sent to the API
+    let lastSendTime = Date.now();
+    let transcriber = null;
+    let isTranscriberReady = false;
 
+    // Initialize AssemblyAI client
     const client = new AssemblyAI({
         apiKey: process.env.ASSEMBLYAI_API_KEY,
     });
 
-    const transcriber = client.realtime.transcriber({
-        encoding: "pcm_s16le",
-        sampleRate: 8000,
-        speech_model: "best",
-        endUtteranceSilenceThreshold: 1000, // Default is 700ms, we can keep it default or change it as well
-    });
+    // Function to create and setup transcriber using the NEW Universal Streaming API
+    const setupTranscriber = async () => {
+        try {
+            console.log("Setting up AssemblyAI transcriber...");
 
-    const transcriberConnectionPromise = transcriber.connect();
+            // Use the NEW streaming API
+            transcriber = client.streaming.transcriber({
+                sampleRate: 8000, // Twilio uses 8kHz
+                encoding: "pcm_s16le", // 16-bit PCM
+                formatTurns: true, // Enable text formatting
+                endOfTurnConfidenceThreshold: 0.4, // Default confidence threshold
+                minEndOfTurnSilenceWhenConfident: 400, // 400ms silence when confident
+                maxTurnSilence: 1280, // 1.28s max silence before end of turn
+            });
 
-    transcriber.on("transcript.partial", (partialTranscript) => {
-        const transcript = partialTranscript.text;
+            // Setup event listeners for Universal Streaming API
+            transcriber.on("open", ({ id }) => {
+                console.log(
+                    `✅ Connected to Universal Streaming service - Session ID: ${id}`
+                );
+                isTranscriberReady = true;
+            });
 
-        if (!transcript) return;
+            transcriber.on("turn", async (turn) => {
+                try {
+                    const transcript = turn.transcript;
+                    if (!transcript) return;
 
-        console.log(
-            "Partial ->>>>>>>> " +
-                transcript +
-                " " +
-                new Date().toLocaleString()
-        );
-    });
+                    console.log(
+                        `Turn (${turn.turn_order}) ->>>>>>>> "${transcript}" ` +
+                            `(end_of_turn: ${turn.end_of_turn}, formatted: ${turn.turn_is_formatted}) ` +
+                            new Date().toLocaleString()
+                    );
 
-    transcriber.on("transcript.final", async (finalTranscript) => {
-        console.log(
-            "Final ->>>>>>>> " +
-                finalTranscript.text +
-                " " +
-                new Date().toLocaleString()
-        );
+                    // Process when we have a complete turn with formatting
+                    if (
+                        turn.end_of_turn &&
+                        turn.turn_is_formatted &&
+                        transcript.trim()
+                    ) {
+                        console.log("Processing complete turn...");
+                        answer = await sendMessage(transcript);
+                        console.log("AI Response generated:", answer);
 
-        answer = await sendMessage(finalTranscript.text);
+                        if (isCallActive && callSid) {
+                            console.log(
+                                "Updating Twilio call with response..."
+                            );
+                            await updateCall();
+                            accumulatedAudio = [];
+                        } else {
+                            console.log(
+                                "Call ended while processing, skipping TwiML update"
+                            );
+                        }
+                    }
+                } catch (error) {
+                    console.error("Error processing turn:", error);
+                    // Don't let transcriber errors crash the call
+                }
+            });
 
-        if (isCallActive) {
-            await updateCall();
-            accumulatedAudio = [];
-        } else {
-            console.log("Call ended while processing, skipping TwiML update");
+            transcriber.on("error", (error) => {
+                console.error("❌ Transcriber error:", error);
+                isTranscriberReady = false;
+            });
+
+            transcriber.on("close", (code, reason) => {
+                console.log(
+                    `🔌 Disconnected from Universal Streaming service: ${code} ${reason}`
+                );
+                isTranscriberReady = false;
+            });
+
+            // Connect to AssemblyAI Universal Streaming
+            console.log("Connecting to AssemblyAI...");
+            await transcriber.connect();
+            console.log("✅ Transcriber setup completed");
+        } catch (error) {
+            console.error("❌ Error setting up transcriber:", error);
+            isTranscriberReady = false;
         }
-    });
-
-    transcriber.on("open", () => console.log("Connected to real-time service"));
-
-    transcriber.on("error", console.error);
-
-    transcriber.on("close", () =>
-        console.log("Disconnected from real-time service")
-    );
+    };
 
     ws.on("message", async (message) => {
         const msg = JSON.parse(message);
+
         switch (msg.event) {
             case "connected":
                 isCallActive = true;
@@ -151,10 +182,14 @@ wss.on("connection", async (ws) => {
                 callSid = msg.start.callSid;
                 console.log(`Starting Media Stream ${msg.streamSid}`);
 
+                // Initialize transcriber when stream starts
+                await setupTranscriber();
+
+                // Send welcome message
                 const data = qs.stringify({
                     Twiml: `<Response>
-                                <Say language="en-IN">Hello! Welcome to Hyundai Motors! How may I assist you today?</Say>
-                                <Redirect method="POST">https://salesagent.callhippo.com/process-user-input</Redirect>
+                                <Say language="en-IN">Hello! I'm your AI sales assistant. How can I help you today?</Say>
+                                <Redirect method="POST">https://15c69a10ce25.ngrok-free.app/process-user-input</Redirect>
                         </Response>`,
                 });
 
@@ -170,24 +205,24 @@ wss.on("connection", async (ws) => {
                     data: data,
                 };
 
-                axios
-                    .request(config)
-                    .then(() =>
-                        console.log("Welcome message played successfully")
-                    )
-                    .catch((error) =>
-                        console.error(
-                            "Error playing welcome message:",
-                            error.response ? error.response.data : error.message
-                        )
+                try {
+                    await axios.request(config);
+                    console.log("Welcome message played successfully");
+                } catch (error) {
+                    console.error(
+                        "Error playing welcome message:",
+                        error.response ? error.response.data : error.message
                     );
+                }
                 break;
 
             case "media":
-                if (!isCallActive) return;
+                if (!isCallActive || !isTranscriberReady || !transcriber) {
+                    return;
+                }
 
                 try {
-                    // Convert incoming audio
+                    // Convert incoming audio (Twilio sends mulaw encoded audio)
                     const audioBuffer = Buffer.from(
                         msg.media.payload,
                         "base64"
@@ -205,41 +240,64 @@ wss.on("connection", async (ws) => {
                         audioBufferToSend,
                     ]);
 
-                    // Calculate current buffer duration
+                    // Calculate current buffer duration in milliseconds
                     const duration =
                         (accumulatedAudioBuffer.length / 2 / 8000) * 1000;
                     const timeSinceLastSend = Date.now() - lastSendTime;
 
-                    // Check conditions for sending audio
+                    // Check conditions for sending audio (send smaller, more frequent chunks)
                     const shouldSendDueToSize =
-                        duration >= OPTIMAL_MIN_DURATION &&
-                        duration <= OPTIMAL_MAX_DURATION;
+                        duration >= OPTIMAL_MIN_DURATION;
                     const shouldSendDueToTime =
                         timeSinceLastSend >= PAUSE_THRESHOLD;
 
+                    // Interrupt detection
                     if (isCurrentlyPlaying) {
                         const speechDetected = isSpeechDetected(linear16Buffer);
-
                         if (speechDetected) {
-                            // console.log("I am called and the twiml is paused");
+                            console.log(
+                                "Speech detected, interrupting current TwiML"
+                            );
                             isCurrentlyPlaying = false;
                             await stopCurrentTwiML();
                         }
                     }
 
-                    if (shouldSendDueToSize || shouldSendDueToTime) {
-                        if (accumulatedAudioBuffer.length > 0) {
-                            await transcriberConnectionPromise;
-                            await transcriber.sendAudio(accumulatedAudioBuffer);
+                    // Send audio when conditions are met
+                    if (
+                        (shouldSendDueToSize || shouldSendDueToTime) &&
+                        accumulatedAudioBuffer.length > 0
+                    ) {
+                        try {
+                            // Send audio using the NEW Universal Streaming API
+                            transcriber.send(accumulatedAudioBuffer);
 
                             // Reset buffer and timing
                             accumulatedAudioBuffer = Buffer.alloc(0);
                             lastSendTime = Date.now();
+                        } catch (error) {
+                            console.error(
+                                "Error sending audio to transcriber:",
+                                error
+                            );
+                            // Reset buffer on error
+                            accumulatedAudioBuffer = Buffer.alloc(0);
+                            lastSendTime = Date.now();
+
+                            // If socket is closed, try to reconnect
+                            if (error.message.includes("Socket is not open")) {
+                                console.log(
+                                    "Attempting to reconnect transcriber..."
+                                );
+                                isTranscriberReady = false;
+                                setTimeout(async () => {
+                                    await setupTranscriber();
+                                }, 1000);
+                            }
                         }
                     }
                 } catch (error) {
                     console.error("Error processing audio:", error);
-                    // Optionally reset buffers on error
                     accumulatedAudioBuffer = Buffer.alloc(0);
                     lastSendTime = Date.now();
                 }
@@ -249,15 +307,38 @@ wss.on("connection", async (ws) => {
                 isCallActive = false;
                 isCurrentlyPlaying = false;
                 console.log("Call has ended");
+
+                // Send any remaining audio before closing
+                if (
+                    accumulatedAudioBuffer.length > 0 &&
+                    transcriber &&
+                    isTranscriberReady
+                ) {
+                    try {
+                        transcriber.send(accumulatedAudioBuffer);
+                    } catch (error) {
+                        console.error(
+                            "Error sending final audio chunk:",
+                            error
+                        );
+                    }
+                }
                 break;
         }
     });
 
     ws.on("close", async () => {
         console.log("Twilio media stream WebSocket disconnected");
-        await transcriber.close();
+
+        // Close transcriber properly
+        if (transcriber) {
+            try {
+                await transcriber.close();
+            } catch (error) {
+                console.error("Error closing transcriber:", error);
+            }
+        }
     });
-    await transcriberConnectionPromise;
 });
 
 // Update Twilio call with the response
@@ -270,13 +351,29 @@ const updateCall = async () => {
             return;
         }
 
+        // Sanitize the answer to prevent TwiML injection
+        const sanitizedAnswer = answer.replace(/[<>&"']/g, (match) => {
+            const escapeMap = {
+                "<": "&lt;",
+                ">": "&gt;",
+                "&": "&amp;",
+                '"': "&quot;",
+                "'": "&#39;",
+            };
+            return escapeMap[match];
+        });
+
+        const twimlResponse = `<Response>
+                <Say language="en-IN">${sanitizedAnswer}</Say>
+                <Pause length="2"/>
+                <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600"></Gather>
+                <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
+            </Response>`;
+
+        console.log("Sending TwiML to Twilio:", twimlResponse);
+
         const data = qs.stringify({
-            Twiml: `<Response>
-                    <Say language="en-IN">${answer}</Say>
-                        <Pause length="2"/>
-                    <Gather input="speech" action="https://salesagent.callhippo.com/process-user-input" method="POST" timeout="600"></Gather>
-                    <Say language="en-IN">We have not received any input from yourside. Feel free to reach out to us again. Goodbye!</Say>
-                </Response>`,
+            Twiml: twimlResponse,
         });
 
         const config = {
@@ -292,20 +389,36 @@ const updateCall = async () => {
         };
 
         try {
-            await axios.request(config);
+            const response = await axios.request(config);
             isCurrentlyPlaying = true;
+            console.log("✅ TwiML updated successfully, bot is now speaking");
+            console.log("Twilio response status:", response.status);
         } catch (error) {
-            if (error.response && error.response.data.code === 21220) {
-                console.log("Call already ended, cannot update TwiML");
+            if (error.response) {
+                console.error("❌ Twilio API Error:", {
+                    status: error.response.status,
+                    data: error.response.data,
+                    callSid: callSid,
+                });
+
+                if (error.response.data.code === 21220) {
+                    console.log("Call already ended, cannot update TwiML");
+                } else if (error.response.data.code === 20003) {
+                    console.log(
+                        "Authentication error - check Twilio credentials"
+                    );
+                } else if (error.response.data.code === 20404) {
+                    console.log("Call not found - call may have ended");
+                }
             } else {
                 console.error(
-                    "Error updating TwiML:",
-                    error.response ? error.response.data : error.message
+                    "❌ Network error updating TwiML:",
+                    error.message
                 );
             }
         }
     } catch (err) {
-        console.info("In error of Update Call" + JSON.stringify(err));
+        console.error("Error in updateCall:", err.message);
     }
 };
 
@@ -320,8 +433,8 @@ const stopCurrentTwiML = async () => {
     const data = qs.stringify({
         Twiml: `
             <Response>
-                <Gather input="speech" action="https://salesagent.callhippo.com/process-user-input" method="POST" timeout="600">
-                    <Pause length="2"/>
+                <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600">
+                    <Pause length="1"/>
                 </Gather>
             </Response>
         `,
@@ -340,9 +453,10 @@ const stopCurrentTwiML = async () => {
     };
 
     try {
-        const response = await axios.request(config);
-        console.log("Successfully interrupted current TwiML, call continues");
-        return response;
+        await axios.request(config);
+        console.log(
+            "Successfully interrupted current TwiML, waiting for user input"
+        );
     } catch (error) {
         if (error.response && error.response.data.code === 21220) {
             console.log("Call already ended, cannot modify TwiML");
@@ -356,16 +470,35 @@ const stopCurrentTwiML = async () => {
 };
 
 app.post("/process-user-input", (req, res) => {
-    res.type("text/xml");
+    try {
+        console.log("Received webhook from Twilio:", req.body);
+        res.type("text/xml");
 
-    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-                            <Response>
-                                <Gather finishOnKey="#" action="/process-user-input">
-                                </Gather>
-                                <Redirect method="POST">/process-user-input</Redirect>
-                        </Response>`;
+        const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+                                <Response>
+                                    <Gather input="speech" action="https://15c69a10ce25.ngrok-free.app/process-user-input" method="POST" timeout="600">
+                                        <Pause length="1"/>
+                                    </Gather>
+                                    <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
+                                </Response>`;
 
-    res.send(twimlResponse);
+        console.log("Sending TwiML response:", twimlResponse);
+        res.send(twimlResponse);
+    } catch (error) {
+        console.error("Error in process-user-input webhook:", error);
+        res.type("text/xml");
+        res.send(`<?xml version="1.0" encoding="UTF-8"?>
+                    <Response>
+                        <Say language="en-IN">Sorry, there was an error processing your request. Please try again later.</Say>
+                        <Hangup/>
+                    </Response>`);
+    }
+});
+
+// GET route
+app.get("/", (req, res) => {
+    console.log("GET request received");
+    res.status(200).send("Server is running");
 });
 
 app.post("/", (req, res) => {
@@ -373,5 +506,9 @@ app.post("/", (req, res) => {
     res.status(200).json({ message: "POST request received!", body: req.body });
 });
 
-console.log(`Listening on port ${PORT}`);
-server.listen(PORT);
+console.log(`🚀 Server starting on port ${PORT}`);
+server.listen(PORT, () => {
+    console.log(`✅ Server is running on port ${PORT}`);
+    console.log(`📞 WebSocket server ready for Twilio connections`);
+    console.log(`🎤 AssemblyAI integration ready`);
+});
