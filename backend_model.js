@@ -13,9 +13,11 @@ exports.sendMessage = async function processMessage(finalTranscript) {
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
         // Create the prompt
-        const prompt = `You are a helpful and knowledgeable AI assistant. Provide clear, professional, and accurate responses. Be conversational and helpful in your interactions.
+        const prompt = `You are a helpful AI sales assistant. Provide clear, professional, and helpful responses. Keep your answers brief and concise and informative. Focus on the most important information only.
+
         User's question: ${finalTranscript}
-        Please provide a helpful and accurate response to the user's question.`;
+        
+        Give a short, helpful answer that directly addresses their question.`;
 
         const result = await model.generateContent(prompt);
         const response = await result.response;

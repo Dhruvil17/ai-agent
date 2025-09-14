@@ -129,6 +129,11 @@ wss.on("connection", async (ws) => {
                         answer = await sendMessage(transcript);
                         console.log("AI Response generated:", answer);
 
+                        const maxResponseLength = 2000;
+                        if (answer.length > maxResponseLength) {
+                            answer = answer.substring(0, maxResponseLength);
+                        }
+
                         if (isCallActive && callSid) {
                             console.log(
                                 "Updating Twilio call with response..."
@@ -370,10 +375,28 @@ const updateCall = async () => {
                 <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
             </Response>`;
 
-        console.log("Sending TwiML to Twilio:", twimlResponse);
+        let finalTwimlResponse = twimlResponse;
+        if (twimlResponse.length > 4000) {
+            console.error(
+                `TwiML too large: ${twimlResponse.length} chars (max: 4000)`
+            );
+            const maxAnswerLength = 1500;
+            const truncatedAnswer =
+                sanitizedAnswer.substring(0, maxAnswerLength) + "...";
+            finalTwimlResponse = `<Response>
+                <Say language="en-IN">${truncatedAnswer}</Say>
+                <Pause length="2"/>
+                <Gather input="speech" action="${BACKEND_URL}/process-user-input" method="POST" timeout="600"></Gather>
+                <Say language="en-IN">We have not received any input from your side. Feel free to reach out to us again. Goodbye!</Say>
+            </Response>`;
+
+            console.log("Using truncated TwiML response");
+        }
+
+        console.log("Sending TwiML to Twilio:", finalTwimlResponse);
 
         const data = qs.stringify({
-            Twiml: twimlResponse,
+            Twiml: finalTwimlResponse,
         });
 
         const config = {
